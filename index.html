@@ -1,1 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Did we win?</title>
+  <style>
+    :root {
+      --fade: 1.5s;       /* fade duration */
+      --cycle: 4s;        /* total time between swaps */
+    }
 
+    html, body {
+      height: 100%;
+      margin: 0;
+      background: #000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+
+    /* Image stack (keeps intrinsic height so centering is stable) */
+    .image-stack {
+      display: grid;
+      place-items: center;
+      width: min(90vw, 900px);
+      max-height: 80vh;
+    }
+    .image-stack img {
+      grid-area: 1 / 1;
+      width: auto;
+      max-width: 100%;
+      max-height: 80vh;
+      opacity: 0;
+      transition: opacity var(--fade) ease-in-out;
+      display: block;
+    }
+    .image-stack img.show { opacity: 1; }
+
+    /* Text stack directly under image, fades exactly the same way */
+    .text-stack {
+      display: grid;
+      place-items: center;
+      height: 1em; /* prevents layout shift while fading text */
+    }
+    .text-stack span {
+      grid-area: 1 / 1;
+      color: #fff;
+      font: 800 clamp(1.5rem, 3vw, 3rem)/1.2 system-ui, sans-serif;
+      opacity: 0;
+      transition: opacity var(--fade) ease-in-out;
+      white-space: nowrap;
+    }
+    .text-stack span.show { opacity: 1; }
+  </style>
+</head>
+<body>
+
+  <div class="image-stack">
+    <img src="resources/Mona_Lisa_resized.jpg" class="imgA show" alt="Mona Lisa">
+    <img src="resources/robotic_mona_lisa_resized.jpg" class="imgB" alt="Robotic Mona Lisa">
+  </div>
+
+  <div class="text-stack" aria-live="polite">
+    <span class="txtA show">Did i win?</span>
+    <span class="txtB">Did i cheat?</span>
+  </div>
+
+  <script>
+    const imgA = document.querySelector('.imgA');
+    const imgB = document.querySelector('.imgB');
+    const txtA = document.querySelector('.txtA');
+    const txtB = document.querySelector('.txtB');
+
+    let showA = true; // showing A initially
+
+    const cycleMs = 2500; // must match --cycle if you change it
+    setInterval(() => {
+      showA = !showA;
+
+      // toggle BOTH images and BOTH texts at the exact same moment
+      imgA.classList.toggle('show', showA);
+      imgB.classList.toggle('show', !showA);
+      txtA.classList.toggle('show', showA);
+      txtB.classList.toggle('show', !showA);
+    }, cycleMs);
+  </script>
+
+</body>
+</html>
