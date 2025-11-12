@@ -1,0 +1,277 @@
+# pip install pillow treepoem
+
+import csv
+from pathlib import Path
+from PIL import Image, ImageDraw
+import treepoem
+
+# ---------------- CONFIG ----------------
+PAYLOAD = "https://bit.ly/43Z3r0z"   # Data Matrix payload
+
+# Plate geometry (1536)
+PLATE_ROWS, PLATE_COLS = 32, 48
+
+# TEXT area (left) — vertical "SCAN" starting at A1
+TEXT_W = 6                 # width in plate cells for the text block (try 7–9)
+TEXT_LINES = ["S","C","A","N",">>"]   # vertical stack
+LINE_SPACING_ROWS = 1     # blank rows between letters (in plate cells)
+GAP = 1                    # quiet zone between text and DM (in plate cells)
+
+# Data Matrix size (square)
+DM_R = 32
+DM_C = 32
+
+# Preview drawing params (just for PNG)
+CELL = 48            # pixels per well
+WALL = 4             # grid wall thickness (thin)
+DOT_RADIUS = 20      # droplet radius (pixels) that scanned well for you
+MARGIN_PIX = 24
+
+# Worklist fields
+SRC_PLATE = "color_plate"
+DST_PLATE = "art_plate"
+SRC_WELL  = "A1"
+VOLUME_NL = 500
+
+OUT_PNG = Path("plate_sim_32x48.png")
+OUT_CSV = Path("worklist_32x48.csv")
+
+
+
+# ------------- CUSTOM 4×5 PIXEL FONT (shorter, cleaner) -------------
+# Each glyph is 4 wide × 5 high. '1' = filled well, '0' = empty.
+FONT_4x5 = {
+    "S": ["0111",
+          "1000",
+          "0110",
+          "0001",
+          "1110"],
+    "C": ["0110",
+          "1001",
+          "1000",
+          "1001",
+          "0110"],
+    "A": ["0110",
+          "1001",
+          "1111",
+          "1001",
+          "1001"],
+    "N": ["1001",
+          "1101",
+          "1011",
+          "1001",
+          "1001"],
+    # Single arrow (if you ever need just one)
+    ">": ["1000",
+          "0100",
+          "0010",
+          "0100",
+          "1000"],
+    # Double arrow, 6 columns wide total (2 more than normal glyph)
+    ">>": ["100010",
+           "010100",
+           "001010",
+           "010100",
+           "100010"],
+    " ": ["0000",
+          "0000",
+          "0000",
+          "0000",
+          "0000"],
+}
+FONT_4x5[">>"] = [
+    "1001000",
+    "0100100",
+    "0010010",
+    "0100100",
+    "1001000",
+]
+
+
+
+MULTI_GLYPHS = {">>"}
+
+CHAR_GAP = 1  # columns between characters inside a line (at scale 1)
+CHAR_GAP = 1  # columns between tokens (at scale 1)
+
+def _tokenize(text: str):
+    """Greedy longest-match tokenizer for multi-char glyphs (e.g., '>>')."""
+    i = 0
+    tokens = []
+    # Precompute lengths to try longest-first
+    lengths = sorted({len(t) for t in MULTI_GLYPHS}, reverse=True)
+    while i < len(text):
+        matched = None
+        for L in lengths:
+            if i + L <= len(text):
+                cand = text[i:i+L]
+                if cand in MULTI_GLYPHS and cand in FONT_4x5:
+                    matched = cand
+                    break
+        if matched:
+            tokens.append(matched)
+            i += len(matched)
+        else:
+            tokens.append(text[i])
+            i += 1
+    return tokens
+
+def render_text_block_vertical(lines, width_cells, total_rows):
+    """
+    Variable-width, token-aware renderer.
+    - Supports multi-character glyphs like '>>'
+    - Chooses a single horizontal integer scale so the *widest line* fits width_cells
+    - Left-aligned in the text block (no quiet zone)
+    """
+    glyph_h = 5
+
+    def glyph_w(token):
+        g = FONT_4x5.get(token.upper(), FONT_4x5[" "])
+        return len(g[0])
+
+    # 1) Measure widest line at scale=1 using tokens
+    widest_line_raw = 0
+    tokenized_lines = []
+    for text in lines:
+        toks = _tokenize(text)
+        tokenized_lines.append(toks)
+        if toks:
+            raw_w = sum(glyph_w(t) for t in toks) + CHAR_GAP * (len(toks) - 1)
+        else:
+            raw_w = 0
+        widest_line_raw = max(widest_line_raw, raw_w)
+
+    # 2) Choose horizontal scale that fits
+    scale_h = max(1, width_cells // max(1, widest_line_raw))
+
+    # 3) Check vertical fit
+    used_rows = len(lines) * glyph_h + (len(lines) - 1) * LINE_SPACING_ROWS
+    if used_rows > total_rows:
+        raise ValueError(f"Text too tall: need {used_rows} rows, have {total_rows}")
+
+    # 4) Rasterize
+    grid = [[0]*width_cells for _ in range(total_rows)]
+    y0 = 0
+    for idx, toks in enumerate(tokenized_lines):
+        x = 0  # left-align each line inside the text block
+        for t in toks:
+            glyph = FONT_4x5.get(t.upper(), FONT_4x5[" "])
+            gw = len(glyph[0])
+            for gy in range(glyph_h):
+                row = glyph[gy]
+                for gx in range(gw):
+                    if row[gx] == "1":
+                        # paint scaled horizontally, no vertical scaling
+                        for sx in range(scale_h):
+                            yy = y0 + gy
+                            xx = x + gx*scale_h + sx
+                            if 0 <= yy < total_rows and 0 <= xx < width_cells:
+                                grid[yy][xx] = 1
+            x += gw*scale_h + CHAR_GAP*scale_h  # gap between tokens
+        y0 += glyph_h
+        if idx < len(lines) - 1:
+            # add normal spacing between lines
+            extra = 0
+            # manually add 1 extra blank row before ">>"
+            if lines[idx + 1].strip() == ">>":
+                extra = 2
+            y0 += LINE_SPACING_ROWS + extra
+
+    return grid
+
+def well_name_1536(r, c):
+    # Row labels A..Z, AA..AF (32 rows)
+    def row_label(n):
+        label = ""
+        while True:
+            n, rem = divmod(n, 26)
+            label = chr(65 + rem) + label
+            if n == 0:
+                break
+            n -= 1
+        return label
+    return f"{row_label(r)}{c+1}"
+
+# -------- Build plate grid (0=empty, 1=dispense) --------
+grid = [[0]*PLATE_COLS for _ in range(PLATE_ROWS)]
+
+# 1) TEXT block top-left at A1 (row 0, col 0)
+text_grid = render_text_block_vertical(TEXT_LINES, TEXT_W, PLATE_ROWS)
+for r in range(PLATE_ROWS):
+    for c in range(TEXT_W):
+        if text_grid[r][c]:
+            grid[r][c] = 1
+
+# 2) Generate Data Matrix and place to the right with GAP
+dm_img = treepoem.generate_barcode(
+    barcode_type="datamatrix",
+    data=PAYLOAD,
+    options={"rows": str(DM_R), "columns": str(DM_C)}
+).convert("1")
+
+# Tight crop (remove quiet zone)
+px = dm_img.load()
+w, h = dm_img.size
+top = left = None
+right = bottom = None
+for y in range(h):
+    for x in range(w):
+        if px[x, y] == 0:
+            if top is None: top = y
+            bottom = y
+            if left is None or x < left:   left = x
+            if right is None or x > right: right = x
+tight = dm_img.crop((left, top, right+1, bottom+1)).resize((DM_C, DM_R), Image.NEAREST)
+
+dm_bits = [[1 if tight.getpixel((x, y)) == 0 else 0 for x in range(DM_C)] for y in range(DM_R)]
+
+# align DM to the far right (last filled column on plate col 47)
+dm_col0 = PLATE_COLS - DM_C  # e.g., 48 - 32 = 16
+
+# (optional) If you want one empty column at the far right as a quiet zone, use:
+dm_col0 = PLATE_COLS - DM_C - 4   # DM ends at col 46, col 47 is blank
+for r in range(PLATE_ROWS):
+    for c in range(DM_C):
+        cc = dm_col0 + c
+        if 0 <= cc < PLATE_COLS:
+            if dm_bits[r][c] == 1:
+                grid[r][cc] = 1
+
+# -------- Write Echo-style CSV (only black modules) --------
+rows_out = []
+for r in range(PLATE_ROWS):
+    for c in range(PLATE_COLS):
+        if grid[r][c] == 1:
+            rows_out.append([SRC_PLATE, DST_PLATE, SRC_WELL, well_name_1536(r, c), VOLUME_NL])
+
+with OUT_CSV.open("w", newline="") as f:
+    wcsv = csv.writer(f)
+    wcsv.writerow(["source_plate","destination_plate","source_well","destination_well","volume_nL"])
+    wcsv.writerows(rows_out)
+
+print(f"Wrote worklist: {OUT_CSV.resolve()}   (rows: {len(rows_out)})")
+
+# -------- Preview PNG (sanity check) --------
+img_w = PLATE_COLS*CELL + WALL + 2*MARGIN_PIX
+img_h = PLATE_ROWS*CELL + WALL + 2*MARGIN_PIX
+preview = Image.new("RGB", (img_w, img_h), "white")
+d = ImageDraw.Draw(preview)
+
+# grid walls
+for rr in range(PLATE_ROWS+1):
+    y = MARGIN_PIX + rr*CELL
+    d.rectangle([MARGIN_PIX, y, MARGIN_PIX + PLATE_COLS*CELL + WALL, y + WALL], fill="white")
+for cc in range(PLATE_COLS+1):
+    x = MARGIN_PIX + cc*CELL
+    d.rectangle([x, MARGIN_PIX, x + WALL, MARGIN_PIX + PLATE_ROWS*CELL + WALL], fill="white")
+
+# wells
+for rr in range(PLATE_ROWS):
+    for cc in range(PLATE_COLS):
+        if grid[rr][cc] == 1:
+            cx = MARGIN_PIX + cc*CELL + (CELL - WALL)//2 + WALL//2
+            cy = MARGIN_PIX + rr*CELL + (CELL - WALL)//2 + WALL//2
+            d.ellipse([cx-DOT_RADIUS, cy-DOT_RADIUS, cx+DOT_RADIUS, cy+DOT_RADIUS], fill="black")
+
+preview.save(OUT_PNG)
+print(f"Wrote preview : {OUT_PNG.resolve()}")

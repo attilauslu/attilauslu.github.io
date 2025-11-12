@@ -54,6 +54,14 @@
       white-space: nowrap;
     }
     .text-stack span.show { opacity: 1; }
+
+    /* Static small image underneath the text (now larger & spaced) */
+    .under-image {
+      width: 160px;          /* 3× larger */
+      height: auto;
+      opacity: 0.85;
+      margin-top: 1.5rem;    /* adds space below text */
+    }
   </style>
 </head>
 <body>
@@ -67,6 +75,9 @@
     <span class="txtA show">Did i win?</span>
     <span class="txtB">Did i cheat?</span>
   </div>
+
+  <!-- Static larger image underneath -->
+  <img src="resources/me_small.jpg" alt="smile icon" class="under-image">
 
   <script>
     const imgA = document.querySelector('.imgA');

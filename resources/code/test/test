@@ -1,0 +1,222 @@
+# pip install pillow treepoem
+
+import csv
+import string
+from pathlib import Path
+from PIL import Image, ImageDraw
+import treepoem
+
+# ---------------- CONFIG ----------------
+PAYLOAD = "https://bit.ly/43Z3r0z"   # content for Data Matrix
+PLATE_ROWS, PLATE_COLS = 32, 48      # 1536 plate
+
+# Text block (left)
+TEXT_W = 11                          # 9, 10, or 11 are good choices
+TEXT_LINES = ["SCAN", "ME", ">>>"]   # you can change to ["SCAN", "ME", "→→→"] if your font supports it
+GAP = 1                              # blank column between text and code
+
+# Data Matrix size (square)
+DM_R = 32
+DM_C = 32
+
+# Drawing preview parameters (purely for the PNG simulation)
+CELL = 32            # pixel size of one plate well
+WALL = 3             # pixels between wells (thin)
+DOT_RADIUS = 14      # droplet radius in pixels (tweak to look connected)
+MARGIN_PIX = 24      # outer margin (for the preview image only)
+
+# Worklist fields
+SRC_PLATE = "color_plate"
+DST_PLATE = "art_plate"
+SRC_WELL  = "A1"
+VOLUME_NL = 500
+
+OUT_PNG = Path("plate_sim_32x48.png")
+OUT_CSV = Path("worklist_32x48.csv")
+
+# ------------- 5x7 PIXEL FONT -------------
+# Simple uppercase 5x7 font (dict of strings). 1 = black pixel, 0 = white.
+FONT_5x7 = {
+    "A": ["01110","10001","10001","11111","10001","10001","10001"],
+    "C": ["01110","10001","10000","10000","10000","10001","01110"],
+    "E": ["11111","10000","11110","10000","10000","10000","11111"],
+    "M": ["10001","11011","10101","10101","10001","10001","10001"],
+    "N": ["10001","11001","10101","10011","10001","10001","10001"],
+    "S": ["01111","10000","10000","01110","00001","00001","11110"],
+    # arrow glyphs (">") as a 5x7 – stylized
+    ">": ["11000","01100","00110","00011","00110","01100","11000"],
+    # space
+    " ": ["00000","00000","00000","00000","00000","00000","00000"],
+}
+
+def render_text_to_grid(lines, width, height):
+    """
+    Render lines (list of strings) into a boolean grid of given width×height.
+    Uses 5x7 font scaled to best fit. Centers each line horizontally.
+    """
+    # Determine font block height incl. 1-row spacing between lines
+    glyph_h = 7
+    line_spacing = 1
+    total_line_blocks = len(lines)*glyph_h + (len(lines)-1)*line_spacing
+    # Compute uniform vertical scale to fit total height
+    scale_v = max(1, height // total_line_blocks)
+    scaled_glyph_h = glyph_h * scale_v
+    scaled_line_spacing = line_spacing * scale_v
+    used_h = len(lines)*scaled_glyph_h + (len(lines)-1)*scaled_line_spacing
+    top_pad = (height - used_h)//2
+
+    grid = [[0]*width for _ in range(height)]
+
+    # For each line, compute max per-line horizontal scale to fit width
+    y = top_pad
+    for line in lines:
+        # compute the pixel width of this line at scale=1
+        raw_w = 0
+        for ch in line:
+            g = FONT_5x7.get(ch.upper(), FONT_5x7[" "])
+            raw_w += len(g[0])  # 5 columns
+            raw_w += 1          # 1 col spacing between glyphs
+        if raw_w > 0:
+            raw_w -= 1  # remove trailing space after last glyph
+
+        # choose uniform horizontal scale to fit width
+        if raw_w == 0:
+            scale_h = 1
+        else:
+            scale_h = max(1, width // raw_w)
+
+        # compute left pad to center horizontally
+        line_w = raw_w * scale_h
+        x0 = max(0, (width - line_w)//2)
+
+        # draw each glyph
+        x = x0
+        for ch in line:
+            glyph = FONT_5x7.get(ch.upper(), FONT_5x7[" "])
+            gw = len(glyph[0])  # 5
+            gh = len(glyph)     # 7
+            # blit with scaling
+            for gy in range(gh):
+                for gx in range(gw):
+                    if glyph[gy][gx] == "1":
+                        # fill scale_h × scale_v block
+                        for sy in range(scale_v):
+                            for sx in range(scale_h):
+                                yy = y + gy*scale_v + sy
+                                xx = x + gx*scale_h + sx
+                                if 0 <= yy < height and 0 <= xx < width:
+                                    grid[yy][xx] = 1
+            x += gw*scale_h + 1*scale_h  # 1 col spacing (scaled)
+        y += scaled_glyph_h + scaled_line_spacing
+
+    return grid
+
+def well_name_1536(r, c):
+    # 1536 plate rows go A..AF (32 rows). Excel-like labels.
+    def row_label(n):
+        # 0->A ... 25->Z, 26->AA, ...
+        label = ""
+        n0 = n
+        while True:
+            n, rem = divmod(n, 26)
+            label = chr(65 + rem) + label
+            if n == 0:
+                break
+            n -= 1
+        return label
+
+    return f"{row_label(r)}{c+1}"
+
+# -------- Build the plate grid (0=empty, 1=dispense) --------
+grid = [[0]*PLATE_COLS for _ in range(PLATE_ROWS)]
+
+# 1) Render left text area
+text_grid = render_text_to_grid(TEXT_LINES, TEXT_W, PLATE_ROWS)
+for r in range(PLATE_ROWS):
+    for c in range(TEXT_W):
+        grid[r][c] = max(grid[r][c], text_grid[r][c])  # OR into plate
+
+# 2) Generate the Data Matrix (32×32) and place it at the right
+dm_img = treepoem.generate_barcode(
+    barcode_type="datamatrix",
+    data=PAYLOAD,
+    options={"rows": str(DM_R), "columns": str(DM_C)}
+).convert("1")
+
+# find tight content box (strip quiet zone)
+px = dm_img.load()
+w, h = dm_img.size
+top = left = None
+right = bottom = None
+for y in range(h):
+    for x in range(w):
+        if px[x, y] == 0:
+            if top is None: top = y
+            bottom = y
+            if left is None or x < left:   left = x
+            if right is None or x > right: right = x
+tight = dm_img.crop((left, top, right+1, bottom+1)).resize((DM_C, DM_R), Image.NEAREST)
+
+# convert to boolean matrix (1=black)
+dm_bits = [[1 if tight.getpixel((x, y)) == 0 else 0 for x in range(DM_C)] for y in range(DM_R)]
+
+# Place DM at the right edge, with 1-col GAP after text
+dm_col0 = TEXT_W + GAP
+# Optionally snap DM to the far right instead:
+# dm_col0 = PLATE_COLS - DM_C
+for r in range(PLATE_ROWS):
+    for c in range(DM_C):
+        if 0 <= dm_col0 + c < PLATE_COLS:
+            grid[r][dm_col0 + c] = max(grid[r][dm_col0 + c], dm_bits[r][c])
+
+# 3) (Optional) enforce 1-cell quiet zone around DM block
+#    Comment this out if you want the code flush with text/GAP.
+for r in range(PLATE_ROWS):
+    for c in range(dm_col0-1, dm_col0+DM_C+1):
+        if 0 <= c < PLATE_COLS:
+            # top & bottom rows of the zone
+            if r == 0 or r == PLATE_ROWS-1:
+                grid[r][c] = grid[r][c]  # (edges only)
+for c in range(dm_col0-1, dm_col0+DM_C+1):
+    for r in [0, PLATE_ROWS-1]:
+        pass  # no-op; leave edges alone
+
+# -------- Write CSV worklist (black modules only) --------
+rows_out = []
+for r in range(PLATE_ROWS):
+    for c in range(PLATE_COLS):
+        if grid[r][c] == 1:
+            rows_out.append([SRC_PLATE, DST_PLATE, SRC_WELL, well_name_1536(r, c), VOLUME_NL])
+
+with OUT_CSV.open("w", newline="") as f:
+    wcsv = csv.writer(f)
+    wcsv.writerow(["source_plate","destination_plate","source_well","destination_well","volume_nL"])
+    wcsv.writerows(rows_out)
+
+print(f"Wrote worklist: {OUT_CSV.resolve()}   (rows: {len(rows_out)})")
+
+# -------- Preview PNG (for sanity check) --------
+img_w = PLATE_COLS*CELL + WALL + 2*MARGIN_PIX
+img_h = PLATE_ROWS*CELL + WALL + 2*MARGIN_PIX
+preview = Image.new("RGB", (img_w, img_h), "white")
+d = ImageDraw.Draw(preview)
+
+# grid walls
+for rr in range(PLATE_ROWS+1):
+    y = MARGIN_PIX + rr*CELL
+    d.rectangle([MARGIN_PIX, y, MARGIN_PIX + PLATE_COLS*CELL + WALL, y + WALL], fill="white")
+for cc in range(PLATE_COLS+1):
+    x = MARGIN_PIX + cc*CELL
+    d.rectangle([x, MARGIN_PIX, x + WALL, MARGIN_PIX + PLATE_ROWS*CELL + WALL], fill="white")
+
+# wells (dots)
+for rr in range(PLATE_ROWS):
+    for cc in range(PLATE_COLS):
+        cx = MARGIN_PIX + cc*CELL + (CELL - WALL)//2 + WALL//2
+        cy = MARGIN_PIX + rr*CELL + (CELL - WALL)//2 + WALL//2
+        if grid[rr][cc] == 1:
+            rpx = int(DOT_RADIUS*0.85)     # inner droplet radius
+            d.ellipse([cx-rpx, cy-rpx, cx+rpx, cy+rpx], fill="black")
+
+preview.save(OUT_PNG)
+print(f"Wrote preview : {OUT_PNG.resolve()}")
