@@ -4,99 +4,189 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Did we win?</title>
+
+  <!-- Optional: helps some browsers fetch early -->
+  <link rel="preload" as="audio" href="resources/gigachad_music.mp3">
+
   <style>
-    :root {
-      --fade: 1.5s;       /* fade duration */
-      --cycle: 4s;        /* total time between swaps */
-    }
+    :root { --fade: 1.5s; --cycle: 2500ms; }
 
-    html, body {
+    html, body { height: 100%; margin: 0; background: #000; }
+
+    /* Overlay that gates everything until first interaction */
+    .overlay {
+      position: fixed; inset: 0; display: grid; place-items: center;
+      background: #000; color: #fff; z-index: 9999; cursor: pointer; user-select: none;
+    }
+    .overlay .msg {
+      font: 800 clamp(1.4rem, 3.5vw, 3rem)/1.2 system-ui, sans-serif;
+      opacity: 0.9; text-align: center;
+      padding: 1rem 1.5rem; border-radius: 14px;
+      box-shadow: 0 0 0 1px rgba(255,255,255,.08) inset;
+      animation: pulse 1.8s ease-in-out infinite;
+    }
+    @keyframes pulse { 0%,100% { transform: scale(1); opacity:.9 } 50% { transform: scale(1.02); opacity:1 } }
+
+    /* Main app (hidden until start) */
+    main[hidden] { display: none !important; }
+    main {
       height: 100%;
-      margin: 0;
-      background: #000;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      flex-direction: column;
-      gap: 1.5rem;
+      display: flex; align-items: center; justify-content: center;
+      flex-direction: column; gap: 1.5rem;
     }
 
-    /* Image stack (keeps intrinsic height so centering is stable) */
-    .image-stack {
-      display: grid;
-      place-items: center;
-      width: min(90vw, 900px);
-      max-height: 80vh;
-    }
+    /* Image stack */
+    .image-stack { display: grid; place-items: center; width: min(90vw, 900px); max-height: 80vh; }
     .image-stack img {
-      grid-area: 1 / 1;
-      width: auto;
-      max-width: 100%;
-      max-height: 80vh;
-      opacity: 0;
-      transition: opacity var(--fade) ease-in-out;
-      display: block;
+      grid-area: 1 / 1; width: auto; max-width: 100%; max-height: 80vh;
+      opacity: 0; transition: opacity var(--fade) ease-in-out; display: block;
     }
     .image-stack img.show { opacity: 1; }
 
-    /* Text stack directly under image, fades exactly the same way */
-    .text-stack {
-      display: grid;
-      place-items: center;
-      height: 1em; /* prevents layout shift while fading text */
-    }
+    /* Text stack */
+    .text-stack { display: grid; place-items: center; height: 1em; }
     .text-stack span {
-      grid-area: 1 / 1;
-      color: #fff;
+      grid-area: 1 / 1; color: #fff;
       font: 800 clamp(1.5rem, 3vw, 3rem)/1.2 system-ui, sans-serif;
-      opacity: 0;
-      transition: opacity var(--fade) ease-in-out;
-      white-space: nowrap;
+      opacity: 0; transition: opacity var(--fade) ease-in-out; white-space: nowrap;
     }
     .text-stack span.show { opacity: 1; }
 
-    /* Static small image underneath the text (now larger & spaced) */
-    .under-image {
-      width: 160px;          /* 3× larger */
-      height: auto;
-      opacity: 0.85;
-      margin-top: 1.5rem;    /* adds space below text */
-    }
+    /* Static image under text */
+    .under-image { width: 160px; height: auto; opacity: 0.85; margin-top: 1.5rem; }
   </style>
 </head>
 <body>
 
-  <div class="image-stack">
-    <img src="resources/Mona_Lisa_resized.jpg" class="imgA show" alt="Mona Lisa">
-    <img src="resources/robotic_mona_lisa_resized.jpg" class="imgB" alt="Robotic Mona Lisa">
+  <!-- Tap-to-start overlay -->
+  <div class="overlay" id="overlay" role="button" tabindex="0" aria-label="Tap or click to start">
+    <div class="msg">Tap or click the screen</div>
   </div>
 
-  <div class="text-stack" aria-live="polite">
-    <span class="txtA show">Did i win?</span>
-    <span class="txtB">Did i cheat?</span>
-  </div>
+  <!-- App content (hidden until user interacts) -->
+  <main id="app" hidden aria-hidden="true">
+    <div class="image-stack">
+      <img src="resources/Mona_Lisa_resized.jpg" class="imgA show" alt="Mona Lisa">
+      <img src="resources/robotic_mona_lisa_resized.jpg" class="imgB" alt="Robotic Mona Lisa">
+    </div>
 
-  <!-- Static larger image underneath -->
-  <img src="resources/me_small.jpg" alt="smile icon" class="under-image">
+    <div class="text-stack" aria-live="polite">
+      <span class="txtA show">Did i win?</span>
+      <span class="txtB">Did i cheat?</span>
+    </div>
+
+    <img src="resources/me_small.jpg" alt="smile icon" class="under-image">
+
+    <!-- Audio: warm start muted, then unmute+play on first interaction -->
+    <audio id="bg" preload="auto" loop muted playsinline>
+      <source src="resources/gigachad_music.mp3" type="audio/mpeg">
+      <source src="resources/gigachad_music.webm" type="audio/webm">
+    </audio>
+  </main>
 
   <script>
+    // Elements
+    const overlay = document.getElementById('overlay');
+    const app = document.getElementById('app');
+
     const imgA = document.querySelector('.imgA');
     const imgB = document.querySelector('.imgB');
     const txtA = document.querySelector('.txtA');
     const txtB = document.querySelector('.txtB');
 
-    let showA = true; // showing A initially
+    const audio = document.getElementById('bg');
+    const START_AT = 29; // seconds
 
-    const cycleMs = 2500; // must match --cycle if you change it
-    setInterval(() => {
-      showA = !showA;
+    let warmed = false;
+    let firstPlayDone = false;
+    let fadeTimer = null;
 
-      // toggle BOTH images and BOTH texts at the exact same moment
-      imgA.classList.toggle('show', showA);
-      imgB.classList.toggle('show', !showA);
-      txtA.classList.toggle('show', showA);
-      txtB.classList.toggle('show', !showA);
-    }, cycleMs);
+    // Helper: wait once for an event with optional timeout
+    function once(target, event, timeoutMs) {
+      return new Promise((resolve) => {
+        let done = false;
+        const handler = () => { if (!done) { done = true; target.removeEventListener(event, handler); resolve(); } };
+        target.addEventListener(event, handler, { once: true });
+        if (timeoutMs) setTimeout(() => { if (!done) { done = true; target.removeEventListener(event, handler); resolve(); } }, timeoutMs);
+      });
+    }
+    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+
+    // Warm start: play muted briefly, seek to START_AT to fetch that range, then pause
+    async function warmStart() {
+      try {
+        // Ensure metadata
+        if (audio.readyState < 1) audio.load();
+
+        // Start muted (allowed) to warm decoder/buffer
+        audio.muted = true;
+        await audio.play().catch(() => {}); // some browsers auto-play silently; ignore failures
+
+        // Wait for metadata if needed
+        if (audio.readyState < 1) await once(audio, 'loadedmetadata', 1500);
+
+        // Seek to the point we want to start so that range is fetched
+        audio.currentTime = START_AT;
+
+        // Wait until seek completes or we see time progress a tick
+        await Promise.race([ once(audio, 'seeked', 1500), once(audio, 'timeupdate', 1500) ]);
+
+        // Give decoding a moment, then pause so it's silent until user starts
+        await wait(50);
+        audio.pause();
+
+        warmed = true;
+      } catch (e) {
+        // If anything fails, it's fine—the interactive start will still work
+        console.debug('Warm start skipped:', e);
+      }
+    }
+
+    // Kick off warm start ASAP
+    window.addEventListener('load', warmStart);
+
+    function startFadeLoop() {
+      let showA = true; // A is initially visible
+      const cycleMs = 2500;
+      fadeTimer = setInterval(() => {
+        showA = !showA;
+        imgA.classList.toggle('show', showA);
+        imgB.classList.toggle('show', !showA);
+        txtA.classList.toggle('show', showA);
+        txtB.classList.toggle('show', !showA);
+      }, cycleMs);
+    }
+
+    async function startAudioFromStartPoint() {
+      if (!firstPlayDone) {
+        // If warmStart ran, we're already near START_AT; set again just to be safe
+        if (audio.readyState >= 1) {
+          audio.currentTime = START_AT;
+        } else {
+          audio.addEventListener('loadedmetadata', () => { audio.currentTime = START_AT; }, { once: true });
+        }
+        firstPlayDone = true;
+      }
+      audio.muted = false; // unmute only after the user gesture
+      try { await audio.play(); } catch (e) { console.error('Playback failed:', e); }
+    }
+
+    async function beginExperience() {
+      // Hide overlay, show app
+      overlay.style.display = 'none';
+      app.hidden = false;
+      app.setAttribute('aria-hidden', 'false');
+
+      // Start visuals + audio
+      startFadeLoop();
+      await startAudioFromStartPoint();
+    }
+
+    // Allow click/tap or Enter/Space to start
+    overlay.addEventListener('click', beginExperience, { once: true });
+    overlay.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); beginExperience(); }
+    }, { once: true });
   </script>
 
 </body>
