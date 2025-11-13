@@ -31,10 +31,10 @@ MARGIN_PIX = 24
 SRC_PLATE = "color_plate"
 DST_PLATE = "art_plate"
 SRC_WELL  = "A1"
-VOLUME_NL = 500
+VOLUME_NL = 200
 
 OUT_PNG = Path("plate_sim_32x48.png")
-OUT_CSV = Path("worklist_32x48.csv")
+OUT_CSV = Path("worklist_32x48_200volume.csv")
 
 
 
@@ -46,11 +46,11 @@ FONT_4x5 = {
           "0110",
           "0001",
           "1110"],
-    "C": ["0110",
-          "1001",
+    "C": ["0111",
           "1000",
-          "1001",
-          "0110"],
+          "1000",
+          "1000",
+          "0111"],
     "A": ["0110",
           "1001",
           "1111",

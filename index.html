@@ -25,7 +25,10 @@
       box-shadow: 0 0 0 1px rgba(255,255,255,.08) inset;
       animation: pulse 1.8s ease-in-out infinite;
     }
-    @keyframes pulse { 0%,100% { transform: scale(1); opacity:.9 } 50% { transform: scale(1.02); opacity:1 } }
+    @keyframes pulse { 
+      0%,100% { transform: scale(1); opacity:.9 } 
+      50% { transform: scale(1.02); opacity:1 } 
+    }
 
     /* Main app (hidden until start) */
     main[hidden] { display: none !important; }
@@ -48,7 +51,8 @@
     .text-stack span {
       grid-area: 1 / 1; color: #fff;
       font: 800 clamp(1.5rem, 3vw, 3rem)/1.2 system-ui, sans-serif;
-      opacity: 0; transition: opacity var(--fade) ease-in-out; white-space: nowrap;
+      opacity: 0; transition: opacity var(--fade) ease-in-out;
+      white-space: nowrap;
     }
     .text-stack span.show { opacity: 1; }
     
@@ -68,9 +72,9 @@
   <div class="overlay" id="overlay" role="button" tabindex="0" aria-label="Tap or click to start">
     <div class="msg">
       Tap or click the screen
-    <div class="submsg">(🔊 sound ON for full experience)</div>
-  </div>
-
+      <div class="submsg">(🔊 sound ON for full experience)</div>
+    </div>
+  </div> <!-- ✅ FIXED: properly closed overlay -->
 
   <!-- App content (hidden until user interacts) -->
   <main id="app" hidden aria-hidden="true">
@@ -86,7 +90,7 @@
 
     <img src="resources/me_small.jpg" alt="smile icon" class="under-image">
 
-    <!-- Audio: warm start muted, then unmute+play on first interaction -->
+    <!-- Audio -->
     <audio id="bg" preload="auto" loop muted playsinline>
       <source src="resources/gigachad_music.mp3" type="audio/mpeg">
       <source src="resources/gigachad_music.webm" type="audio/webm">
@@ -94,7 +98,6 @@
   </main>
 
   <script>
-    // Elements
     const overlay = document.getElementById('overlay');
     const app = document.getElementById('app');
 
@@ -110,52 +113,52 @@
     let firstPlayDone = false;
     let fadeTimer = null;
 
-    // Helper: wait once for an event with optional timeout
     function once(target, event, timeoutMs) {
       return new Promise((resolve) => {
         let done = false;
-        const handler = () => { if (!done) { done = true; target.removeEventListener(event, handler); resolve(); } };
+        const handler = () => {
+          if (!done) {
+            done = true;
+            target.removeEventListener(event, handler);
+            resolve();
+          }
+        };
         target.addEventListener(event, handler, { once: true });
-        if (timeoutMs) setTimeout(() => { if (!done) { done = true; target.removeEventListener(event, handler); resolve(); } }, timeoutMs);
+        if (timeoutMs)
+          setTimeout(() => {
+            if (!done) {
+              done = true;
+              target.removeEventListener(event, handler);
+              resolve();
+            }
+          }, timeoutMs);
       });
     }
     const wait = (ms) => new Promise(r => setTimeout(r, ms));
 
-    // Warm start: play muted briefly, seek to START_AT to fetch that range, then pause
     async function warmStart() {
       try {
-        // Ensure metadata
         if (audio.readyState < 1) audio.load();
-
-        // Start muted (allowed) to warm decoder/buffer
         audio.muted = true;
-        await audio.play().catch(() => {}); // some browsers auto-play silently; ignore failures
-
-        // Wait for metadata if needed
+        await audio.play().catch(() => {});
         if (audio.readyState < 1) await once(audio, 'loadedmetadata', 1500);
-
-        // Seek to the point we want to start so that range is fetched
         audio.currentTime = START_AT;
-
-        // Wait until seek completes or we see time progress a tick
-        await Promise.race([ once(audio, 'seeked', 1500), once(audio, 'timeupdate', 1500) ]);
-
-        // Give decoding a moment, then pause so it's silent until user starts
+        await Promise.race([
+          once(audio, 'seeked', 1500),
+          once(audio, 'timeupdate', 1500)
+        ]);
         await wait(50);
         audio.pause();
-
         warmed = true;
       } catch (e) {
-        // If anything fails, it's fine—the interactive start will still work
         console.debug('Warm start skipped:', e);
       }
     }
 
-    // Kick off warm start ASAP
     window.addEventListener('load', warmStart);
 
     function startFadeLoop() {
-      let showA = true; // A is initially visible
+      let showA = true;
       const cycleMs = 2500;
       fadeTimer = setInterval(() => {
         showA = !showA;
@@ -168,33 +171,34 @@
 
     async function startAudioFromStartPoint() {
       if (!firstPlayDone) {
-        // If warmStart ran, we're already near START_AT; set again just to be safe
         if (audio.readyState >= 1) {
           audio.currentTime = START_AT;
         } else {
-          audio.addEventListener('loadedmetadata', () => { audio.currentTime = START_AT; }, { once: true });
+          audio.addEventListener('loadedmetadata', () => {
+            audio.currentTime = START_AT;
+          }, { once: true });
         }
         firstPlayDone = true;
       }
-      audio.muted = false; // unmute only after the user gesture
+      audio.muted = false;
       try { await audio.play(); } catch (e) { console.error('Playback failed:', e); }
     }
 
     async function beginExperience() {
-      // Hide overlay, show app
       overlay.style.display = 'none';
       app.hidden = false;
       app.setAttribute('aria-hidden', 'false');
 
-      // Start visuals + audio
       startFadeLoop();
       await startAudioFromStartPoint();
     }
 
-    // Allow click/tap or Enter/Space to start
     overlay.addEventListener('click', beginExperience, { once: true });
     overlay.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); beginExperience(); }
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        beginExperience();
+      }
     }, { once: true });
   </script>
 
